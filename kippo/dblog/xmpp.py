@@ -1,6 +1,10 @@
 from twisted.words.xish import domish
 from wokkel.xmppim import AvailablePresence
-from wokkel import muc
+from twisted.words.protocols.jabber import jid
+from wokkel.client import XMPPClient
+from wokkel.muc import MUCClient
+from twisted.application import service
+from kippo.core import dblog
 import uuid
 
 class XMPPLoggerProtocol(muc.MUCClient):
@@ -13,19 +17,24 @@ class XMPPLoggerProtocol(muc.MUCClient):
         self.last     = {}
         self.activity = None
 
-    def initialized(self):
+    def connectionInitialized(self):
         """The bot has connected to the xmpp server, now try to join the room.
         """
+        def joinedRoom(room):
+            if room.locked:
+                # Just accept the default configuration.
+                return self.configure(room.roomJID, {})
+            
         for i in self.jrooms:
-            print(i)
-            self.join(self.server, i, self.nick).addCallback(self.initRoom)
+            rj = "%s@%s" % (i, self.server)
+            print(rj)
+            self.join(jid.JID(rj), self.nick).addCallback(self.initRoom)
 
     def initRoom(self, room):
-        print 'Joined room %s' % room.name
+        pass
 
     def connectionMade(self):
         print 'Connected!'
-
         # send initial presence
         self.send(AvailablePresence())
 
@@ -40,12 +49,6 @@ class XMPPLoggerProtocol(muc.MUCClient):
 
     def receivedHistory(self, room, user, body, dely, frm=None):
         pass
-
-from twisted.application import service
-from twisted.words.protocols.jabber import jid
-from wokkel.client import XMPPClient
-from kippo.core import dblog
-from twisted.words.xish import domish
 
 class DBLogger(dblog.DBLogger):
     def start(self, cfg):
@@ -72,14 +75,12 @@ class DBLogger(dblog.DBLogger):
 
     def run(self, application, jidstr, password, muc, channels, anon=True):
         self.xmppclient = XMPPClient(jid.internJID(jidstr), password)
-        if self.cfg.has_option('database_xmpp', 'debug') and \
-                self.cfg.get('database_xmpp', 'debug') in ('1', 'true', 'yes'):
+        if self.cfg.has_option('database_xmpp', 'debug') and self.cfg.get('database_xmpp', 'debug') in ('1', 'true', 'yes'):
             self.xmppclient.logTraffic = True # DEBUG HERE
-        (user, host, resource) = jid.parse(jidstr)
-        self.muc = XMPPLoggerProtocol(
-            muc, channels.keys(), user + '-' + resource)
-        self.muc.setHandlerParent(self.xmppclient)
         self.xmppclient.setServiceParent(application)
+        (user, host, resource) = jid.parse(jidstr)
+        self.muc = XMPPLoggerProtocol(muc, channels.keys(), user + '-' + resource)
+        self.muc.setHandlerParent(self.xmppclient)
         self.signals = {}
         for channel in channels:
             for signal in channels[channel]:
@@ -87,19 +88,19 @@ class DBLogger(dblog.DBLogger):
         self.anonymous = True
         self.xmppclient.startService()
 
-    def broadcast(self, msgtype, msg):
+    def broadcast(self, msgtype, msg, plain = ''):
         if msgtype in self.signals:
             self.report(msgtype, '%s@%s' %
-                (self.signals[msgtype], self.muc.server) , msg)
+                (self.signals[msgtype], self.muc.server), msg, plain)
 
-    def report(self, msgtype, to, xmsg):
+    def report(self, msgtype, to, xmsg, plain = ''):
         body = domish.Element((None, 'body'))
-        body.addContent('\n')
+        body.addContent(plain)
         msg = domish.Element(('http://code.google.com/p/kippo/', 'kippo'))
         msg['type'] = msgtype
         msg.addChild(xmsg)
         body.addChild(msg)
-        self.muc.groupChat(to,  None, children=[body])
+        self.muc.groupChat(to, body)
 
     # We have to return an unique ID
     def createSession(self, peerIP, peerPort, hostIP, hostPort):
@@ -113,8 +114,7 @@ class DBLogger(dblog.DBLogger):
         else:
             ses['local_host'] = hostIP
         ses['local_port'] = str(hostPort)
-
-        self.broadcast('createsession', ses)
+        self.broadcast('createsession', ses, "CONNECTION[%s]=%s:%s" % (session, peerIP, peerPort))
         return session
 
     def handleTTYLogOpened(self, session, args):
@@ -123,21 +123,21 @@ class DBLogger(dblog.DBLogger):
     def handleConnectionLost(self, session, args):
         ses = domish.Element((None, 'session'))
         ses['session'] = session
-        self.broadcast('connectionlost', ses)
+        self.broadcast('connectionlost', ses, "LOST[%s]" % (session))
 
     def handleLoginFailed(self, session, args):
         ses = domish.Element((None, 'credentials'))
         ses['session'] = session
         ses['username'] = args['username']
         ses['password'] = args['password']
-        self.broadcast('loginfailed', ses)
+        self.broadcast('loginfailed', ses, "FAILED[%s]=%s/%s" % (session, args['username'], args['password']))
 
     def handleLoginSucceeded(self, session, args):
         ses = domish.Element((None, 'credentials'))
         ses['session'] = session
         ses['username'] = args['username']
         ses['password'] = args['password']
-        self.broadcast('loginsucceeded', ses)
+        self.broadcast('loginsucceeded', ses, "SUCCESS[%s]=%s/%s" % (session, args['username'], args['password']))
 
     def handleCommand(self, session, args):
         ses = domish.Element((None, 'command'))
@@ -167,6 +167,6 @@ class DBLogger(dblog.DBLogger):
         ses = domish.Element((None, 'version'))
         ses['session'] = session
         ses['version'] = args['version']
-        self.broadcast('clientversion', ses)
+        self.broadcast('clientversion', ses, "VERSION[%s]=%s" % (session, args['version']))
 
 # vim: set sw=4 et:
