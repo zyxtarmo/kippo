@@ -7,16 +7,17 @@ from twisted.application import service
 from kippo.core import dblog
 import uuid
 
-class XMPPLoggerProtocol(muc.MUCClient):
+class XMPPLoggerProtocol(MUCClient):
 
     def __init__(self, server, rooms, nick):
-        muc.MUCClient.__init__(self)
+        MUCClient.__init__(self)
         self.server   = server
         self.jrooms     = rooms
         self.nick     = nick
         self.last     = {}
         self.activity = None
-
+        self._roomOccupantMap = {}
+    
     def connectionInitialized(self):
         """The bot has connected to the xmpp server, now try to join the room.
         """
